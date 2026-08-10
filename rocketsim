@@ -1,0 +1,194 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+THRUST_CURVE = np.array([
+    [0.000, 0.0],
+    [0.052,0.0],
+    [0.100, 0.0],
+    [0.150,6.0],
+    [0.200,12.5],
+    [0.300,14.0],
+    [0.400,10.0],
+    [0.500,8.0],
+    [0.600,6.5],
+    [0.700,5.6],
+    [0.800,5.0],
+    [0.900,5.0],
+    [1.000, 5.0],
+    [1.100, 5.0],
+    [1.200, 5.0],
+    [1.300, 5.0],
+    [1.400, 5.0],
+    [1.500, 5.0],
+    [1.600, 5.0],
+    [1.700, 5.0],
+    [1.800, 5.5],
+    [1.850, 3.0],
+    [1.900, 0.0],
+])
+
+BURN_TIME = THRUST_CURVE[-1, 0]
+TOTAL_IMPULSE = np.trapezoid(THRUST_CURVE[:, 1], THRUST_CURVE[:, 0])
+
+
+CUM_IMPULSE = np.concatenate(([0.0], np.cumsum(
+    0.5 * (THRUST_CURVE[1:, 1] + THRUST_CURVE[:-1, 1]) *
+    np.diff(THRUST_CURVE[:, 0])
+)))
+
+
+def thrust_at(t:float) -> float:
+    """Return the thrust at time t in seconds."""
+    if t < 0 or t >= BURN_TIME:
+        return 0.0
+    return float(np.interp(t, THRUST_CURVE[:, 0], THRUST_CURVE[:, 1]))
+
+def propellant_fraction_burned(t:float) -> float:
+    """Return the fraction of propellant burned at time t in seconds."""
+    if t <= 0:
+        return 0.0
+    if t >= BURN_TIME:
+        return 1.0
+    return float(np.interp(t, THRUST_CURVE[:, 0], CUM_IMPULSE / TOTAL_IMPULSE))
+
+
+#rocket parameters -- edit for your rocket
+
+MASS_EMPTY = 0.030      # Kg, rocket structure + motor caising no propellant
+MASS_PROPELLANT = 0.015     # kg, propellant mass consumed during flight
+DRAG_COEFFICIENT = 0.75     # dimensionless, typical for a mdodel rocket
+FRONTAL_AREA = 0.0015      # m^2, cross-sectional area of rocket
+AIR_DENSITY = 3.668     # kg/m^3, density of air at sea level
+G = 9.81      # m/s^2, acceleration due to gravity
+
+DT = 0.01  # time step for simulation in seconds
+
+def mass_at(t: float) -> float:
+    """total rocket mass at time t in seconds as propellant burns off."""
+    return MASS_EMPTY + MASS_PROPELLANT * (1 - propellant_fraction_burned(t))
+
+def drag_force(velocity: float) -> float:
+    """drag magnitude, always opposes velocity"""
+    return 0.5 * AIR_DENSITY * velocity * abs(velocity) * DRAG_COEFFICIENT * FRONTAL_AREA
+
+def acceleration(t: float, v: float) -> float:
+    """net acceleration of rocket at time t in seconds and velocity v in m/s."""
+    m = mass_at(t)
+    F_thrust = thrust_at(t)
+    F_drag = drag_force(v)
+    #drag always oppses motion
+    F_net = F_thrust - F_drag - m * G
+    return F_net / m
+
+def derivative(t: float, state: np.ndarray) -> np.ndarray:
+    """ state = [height, velocity] -> returns [d(height/dt, d(velocty)/dt)] """
+    height, v = state
+    return np.array([v, acceleration(t, v)])
+
+def rk4_step(t: float, state: np.ndarray, dt: float) -> np.ndarray:
+    k1 = derivative(t, state)
+    k2 = derivative(t + dt / 2, state + dt / 2 * k1)
+    k3 = derivative(t + dt / 2, state + dt / 2 * k2)
+    k4 = derivative(t + dt, state + dt * k3)
+    return state + (dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
+
+def simulate():
+    t = 0.0
+    state = np.array ([0.0, 0.0])  # initial height and velocity
+
+    times, heights, velocities, accels, masses = [], [], [], [], []
+
+    burnout_time = None
+    apogee_time = None
+    apogee_height = None
+
+    while True:
+        a = acceleration(t, state[1])
+
+        times.append(t)
+        heights.append(state[0])
+        velocities.append(state[1])
+        accels.append(a)
+        masses.append(mass_at(t))
+
+
+        # flag burnout the frist time thurst curve ends
+
+        if burnout_time is None and t >= BURN_TIME:
+            burnout_time = t
+
+    # apogee = velocity crosess zero on the way down, parabola
+
+        if apogee_time is None and t> BURN_TIME and state[1] <=0:
+            apogee_time = t
+            apogee_height = state[0]
+            break #stop sim at apogee, we have what we need
+
+        #saftey cutoff in case something goes wrong
+
+        if t > 60:
+            print("Simulation exceeded 60 seconds, aborting")
+            break
+
+        state = rk4_step(t, state, DT)
+        t += DT
+
+        #rocket cannot go below ground level, stop sim if it does
+        if state[0] <= 0:
+            state[0] = 0.0
+            state[1] = max(state[1], 0.0)  # prevent negative velocity on ground
+
+    return {
+        "t": np.array(times),
+        "heights": np.array(heights),
+        "velocity": np.array(velocities),
+        "accel": np.array(accels),
+        "mass": np.array(masses),
+        "burnout_time": burnout_time,
+        "apogee_time": apogee_time,
+        "apogee_height": apogee_height
+    }
+
+
+def plot_results(results):
+    fig, axes = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
+
+    axes[0].plot(results["t"], results["heights"], color = "tab:blue")
+    axes[0].axvline(results["burnout_time"], color="tab:green", linestyle="--", label="Burnout")
+    axes[0].set_ylabel("Height (m)")
+    axes[0].legend()
+    axes[0].set_title(f"Apogee: {results['apogee_height']:.1f} m at t={results['apogee_time']:.2f} s")
+
+    axes[1].plot(results["t"], results["velocity"], color = "tab:orange")
+    axes[1].axvline(results["burnout_time"], color="tab:green", linestyle="--")
+    axes[1].axhline(0, color="black", linewidth=0.5)
+    axes[1].set_ylabel("Velocity (m/s)")
+
+    axes[2].plot(results["t"], results["accel"], color = "tab:red")
+    axes[2].axvline(results["burnout_time"], color="tab:green", linestyle="--")
+    axes[2].set_ylabel("Acceleration (m/s²)")
+    axes[2].set_xlabel("Time (s)")
+
+    axes[3].plot(results["t"], results["mass"], color = "tab:purple")
+    axes[3].axvline(results["burnout_time"], color="tab:green", linestyle="--")
+    axes[3].set_ylabel("Mass (kg)")
+    axes[3].set_xlabel("Time (s)")
+
+    plt.tight_layout()
+    plt.savefig("rocket_flight.png", dpi=150)
+    print ("plot saved to rocket_flight.png")
+
+if __name__ == "__main__":
+    results = simulate()
+
+print(f"Burnout time:   {results['burnout_time']:.2f} s")
+print(f"Max velocity:    {results['velocity'].max():.2f} m/s "
+    f"at t={results['t'][np.argmax(results['velocity'])]:.2f} s")
+print(f"apogee height:   {results['apogee_height']:.2f} m")
+print(f"Time to apogee:     {results['apogee_time']:.3f} s")
+print(f"Total impulse:   {TOTAL_IMPULSE:.2f} Ns")
+
+
+plot_results(results)
+
