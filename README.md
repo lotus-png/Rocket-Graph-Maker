@@ -110,4 +110,6 @@ A dashed green line marks motor burnout on each plot.
 
 ## License
 
-Add your license here (e.g., MIT).
+## License
+
+This project is licensed under the MIT License.
